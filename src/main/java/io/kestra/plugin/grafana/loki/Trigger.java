@@ -217,6 +217,11 @@ public class Trigger extends AbstractLokiTrigger implements PollingTriggerInterf
 
             List<Map<String, Object>> logs = lokiQueryResponse.toLogEntries();
 
+            if (logs.isEmpty() && !queryParams.containsKey("start")) {
+                logger.debug("No logs found");
+                return Optional.empty();
+            }
+
             logger.debug("Found {} potential log entries", logs.size());
 
             for (Map<String, Object> log : logs) {
@@ -246,16 +251,18 @@ public class Trigger extends AbstractLokiTrigger implements PollingTriggerInterf
             }
 
             // Loki's start is inclusive, so entries sharing the last timestamp are returned again and skipped by the state.
-            String pageEnd = logs.stream()
-                .map(log -> (String) log.get("timestamp"))
-                .max(Comparator.comparing(Long::parseLong))
+            long pageEnd = logs.stream()
+                .mapToLong(log -> Long.parseLong((String) log.get("timestamp")))
+                .max()
                 .orElseThrow();
 
-            if (pageEnd.equals(queryParams.get("start"))) {
-                break;
+            // A full page with a single timestamp can't be paged within, so move past it instead of stopping there.
+            if (String.valueOf(pageEnd).equals(queryParams.get("start"))) {
+                logger.warn("At least {} entries share timestamp {}, the ones past the first {} are skipped; increase maxRecords to read them all", rMaxRecords, pageEnd, rMaxRecords);
+                pageEnd++;
             }
 
-            queryParams.put("start", pageEnd);
+            queryParams.put("start", String.valueOf(pageEnd));
         }
 
         writeState(runContext, rStateKey, state, rStateTtl);
